@@ -4,6 +4,8 @@ author: "Eric Schares"
 format: 
   html:
     embed-resources: true
+    page-layout: full
+    code-overflow: wrap
 # format: 
 #   pdf:
 #     toc: true
@@ -58,7 +60,6 @@ library(rethinking)
 #library(marginaleffects)  # for interpreting model results
 library(ggridges)         # for ridge plots
 
-rsconnect::writeManifest()
 ```
 
 # Simulate synthetic journals
