@@ -232,7 +232,7 @@ dat |>
   facet_wrap(~journal_id)
 ```
 
-```{r density-plots include=FALSE}
+```{r include=FALSE}
 
 # Price
 # OA
