@@ -5,7 +5,7 @@ format:
   html:
     embed-resources: true
     page-layout: full
-    code-overflow: wrap
+    #code-overflow: wrap
 # format: 
 #   pdf:
 #     toc: true
@@ -54,12 +54,11 @@ Remember to clean and refresh Environment
 
 ## Load libraries
 
-```{r message = FALSE, warning = TRUE}
+```{r message = FALSE, warning = FALSE}
 library(tidyverse)
 library(rethinking)
 #library(marginaleffects)  # for interpreting model results
 library(ggridges)         # for ridge plots
-
 ```
 
 # Simulate synthetic journals
@@ -111,7 +110,7 @@ sim_journals_lognormal_multilevel <- function(
   
   Publisher_j <- rbern(J, 0.5) + 1         # 2 levels, 1 or 2
   
-  # Discipline depends on Publisher
+  # DAG shows Discipline depends on Publisher
   prob_disc   <- ifelse(Publisher_j == 1, 0.6, 0.3)
   Disc_j      <- rbern(J, prob_disc) + 1   # 2 levels, 1 or 2
   
@@ -148,7 +147,7 @@ sim_journals_lognormal_multilevel <- function(
   art_raw <- rnorm(N, 1200, 500)
   art_raw <- pmax(10, art_raw * ( (100 - OA_raw) / 100) )  # set floor to 10 articles
   
-  # IF depends on nothing, lognormal distribution
+  # IF depends on nothing, use a LogNormal distribution
   IF_raw <- rlnorm(N, meanlog = log(2.5), sdlog = 0.8)
   log_IF <- log(IF_raw)      # approx normal with mean log(2.5)
   
@@ -157,7 +156,7 @@ sim_journals_lognormal_multilevel <- function(
   z_articles  <- standardize(art_raw)
   z_IF        <- standardize(log_IF)
   
-  # OA effect by publisher
+  # OA effect varies by publisher
   b_OA = c(-0.05, 0.05)       # -5% price shift with 1 SD increase in OA
 
   
@@ -233,7 +232,7 @@ dat |>
   facet_wrap(~journal_id)
 ```
 
-```{r density-plots}
+```{r density-plots include=FALSE}
 
 # Price
 # OA
@@ -408,4 +407,46 @@ for (j in 1:50) {
 
 abline(h = 0, lty = 2, col = "red")
 
+```
+
+# Run Model
+
+Run the model to estimate the parameters. Converted alpha model to a matrix of \[Pub, Disc\]. Requires some downstream edits to process.
+
+Add multi-level priors on the alpha intercept
+
+Add journal parameter to remember that we have repeated measurements on each journal
+
+```{r ulam}
+m4.10 <- ulam(
+  alist( 
+    #adjusted_price ~ dlnorm(log(mu), sigma),     # for price that only goes up
+    Price ~ dlnorm(mu, sigma),
+    
+    mu <- a[Publisher, Disc] + 
+          a_journal_est[journal_id] +
+          b_OA[Publisher] * z_OA +
+          b_articles * z_articles +
+          b_IF * z_IF,
+    
+    matrix[Publisher, Disc]:a ~ dnorm(abar, zigma),     
+    
+    abar ~ dnorm(7.5, 1),    # Global intercept at mean OA, articles, and IF, exp(7.5) = $1800
+    zigma ~ dexp(1),
+    
+    a_journal_est[journal_id] ~ dnorm(0, 0.5),
+    b_OA[Publisher] ~ dnorm(0, 0.2),                    # $ change per 1 SD OA
+    b_articles ~ dnorm(0, 0.2),              # $ change per 1 SD articles
+    b_IF ~ dlnorm(0, 0.2),                   # $ change per 1 SD in IF
+    
+    sigma ~ dexp(1) 
+    
+  ), data=dat, chains=4, cores=4, log_lik = TRUE
+)
+```
+
+## Check parameters
+
+```{r precis}
+precis(m4.10, depth = 3)
 ```
