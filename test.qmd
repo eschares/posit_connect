@@ -57,6 +57,8 @@ library(tidyverse)
 library(rethinking)
 #library(marginaleffects)  # for interpreting model results
 library(ggridges)         # for ridge plots
+
+rsconnect::writeManifest()
 ```
 
 # Simulate synthetic journals
@@ -195,7 +197,7 @@ head(dat)
 
 Summarize it
 
-```{r}
+```{r summarize_it}
 dat |> 
   summarize(n_rows = n(),
             n_journals = n() / 7,
@@ -210,4 +212,199 @@ dat |>
 
 # ggplot(data.frame(Publisher, Disc), aes(x = Publisher, y = Disc)) + 
 #   geom_point()
+```
+
+Graph it
+
+```{r}
+dat |> 
+  ggplot(aes(x = Price)) + 
+    geom_density(aes(colour = as.factor(journal_id)))
+  #facet_wrap(~journal_id)
+```
+
+```{r first-5-journals}
+# First 5 journals
+dat |> 
+  slice_head(n=7*5) |> 
+  ggplot(aes(x = year, y = Price)) + 
+    geom_point(aes(colour = z_OA)) +
+  facet_wrap(~journal_id)
+```
+
+```{r density-plots}
+
+# Price
+# OA
+# num_articles
+# IF
+
+# Price
+dat |> 
+  ggplot(aes(x = Price,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges() 
+
+# OA
+dat |> 
+  ggplot(aes(x = OA_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# OA standardized
+dat |> 
+  ggplot(aes(x = z_OA,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+
+# num_articles
+dat |> 
+  ggplot(aes(x = art_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# num_articles standardized
+dat |> 
+  ggplot(aes(x = z_articles,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# IF
+dat |> 
+  ggplot(aes(x = IF_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# log(IF)
+dat |> 
+  ggplot(aes(x = log_IF,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# IF standardized
+dat |> 
+  ggplot(aes(x = z_IF,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+```
+
+```{r include=FALSE}
+transform(dat, 
+          fct = cut(art_raw, seq(0, 5000, 500))
+          ) |> 
+  
+  ggplot(aes(x = OA_raw, y = adjusted_price)) +
+  geom_point(aes(colour = as.factor(Publisher))) +
+  
+  #facet_wrap(~Disc ) +
+  
+  facet_grid(rows = vars(Pub_Disc), cols = vars(fct)) +
+  
+  labs(title = 'Rows are Pub_Disc indexes',
+       subtitle = 'Cols are number of articles')
+
+
+```
+
+# Prior predictive distribution
+
+```{r include=FALSE}
+# For standardized variables
+e <- 20
+a <- rnorm(e, 0, 0.2 )
+bA <- rnorm(e, 0, 0.5)
+
+plot(NULL, xlim=c(-2,2), ylim=c(-2,2),
+xlab='Standardized',
+ylab='Standardized')
+
+Aseq <- seq(from=-3, to=3, len=30)
+
+for( i in 1:e ) {
+  mu <- a[i] + bA[i]*Aseq
+  lines( Aseq, mu, lwd=2, col=2)
+}
+```
+
+```{r prior-predictive}
+# Think about plausible ranges of each parameter
+
+n <- 1e3
+
+a_pub_disc  <- rnorm(n, 7.5, 1)    # Publisher intercept at mean OA (20%), mean num articles (1000), mean IF (2.5)
+
+a_journal_j <- rnorm(n, 0, 0.5)    #95% -1 to 1
+
+# sd(dat$OA_raw)    # 11
+# sd(dat$art_raw)   # 400
+# sd(dat$IF_raw)    # 1.5
+# 
+# mean(dat$OA_raw)   # 20
+# mean(dat$art_raw)  # 1000
+# mean(dat$IF_raw)   # 2.5
+# mean(dat$Price)    # 1500
+ 
+# 0, 0.2 means 95% between -40% and +40%
+b_OA   <- rnorm(n, 0, 0.2)       # OA effect, $ change per 1SD in OA
+b_art  <- rnorm(n, 0, 0.2)       # volume effect, $ change per 1SD in articles
+b_IF   <- rnorm(n, 0, 0.2)
+
+
+OA_seq <- seq(-3, 3, length.out = 60)
+art_ref <- 0     # taking average article
+IF_ref  <- 0     # Impact Factor at average
+
+
+plot(NULL, xlim = c(-3, 3),
+           ylim = c(-500, 7000),
+           xlab = "OA% Standardized (1SD = 11%)", ylab = "Price ($)", main = "Prior Predictive Distribution")
+
+for (j in 1:50) {
+  log_mu <- a_pub_disc[j] + 
+        a_journal_j[j] + 
+        b_OA[j] * OA_seq +
+        b_art[j] * art_ref +  # standardized priors, get zero'd out
+        b_IF[j] * IF_ref
+  
+  lines( OA_seq, exp(log_mu),
+         lwd = 1.5, col = 2)
+  
+}
+
+abline(h = 0, lty = 2, col = "red")
+
 ```
