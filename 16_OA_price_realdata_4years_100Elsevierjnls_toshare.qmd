@@ -1,0 +1,1338 @@
+---
+title: "OA vs. Price Statistical Model"
+author: "Eric Schares"
+format: 
+  html:
+    embed-resources: true
+    page-layout: full
+    #code-overflow: wrap
+# format: 
+#   pdf:
+#     toc: true
+#     number-sections: true
+#     colorlinks: true
+editor: visual
+---
+
+November 18, 2026
+
+10/21 - Adding binary variable for WoS indexed yes/no, and if yes then estimate IF effect 
+
+10/27 - Introduce real data for the first time! Small dataset of 40 Elsevier journals x 2 years
+
+10/28 - Start to assemble REAL DATA! 4 years of electronic pricing, 2024-2027
+Lots of BS chasing down wrong ISSN_L's
+
+11/10 - Work with first 100 Elsevier journals, run model
+
+# Overview
+
+The estimand for this analysis is the direct causal effect of Open Access availability (OA%) on a hybrid journal's subscription price.
+
+# Analysis
+
+Remember to clean and refresh Environment
+
+# Load libraries
+
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(rethinking)
+#library(marginaleffects)  # for interpreting model results
+library(ggridges)         # for ridge plots
+library(readxl)
+library(gghighlight)
+library(glue)
+library(patchwork)
+```
+
+# Load real data!
+
+```{r}
+dat <- read.csv('assembled_data.csv')
+
+dat
+```
+
+Process it and rename columns
+
+```{r}
+dat <- dat |> 
+  rename(IF_raw = Journal.impact.factor) |> 
+  
+  mutate(Pub = as.numeric(as.factor(Publisher)),
+         Disc = as.numeric(as.factor(Domain)),
+         Pub_Disc = as.numeric(as.factor(paste0(Pub,Disc))),
+         log_IF = if_else( is.na(IF_raw), 0, log(IF_raw) )
+         ) |> 
+  
+   rename(OA_raw = OA_percent,
+          #Price = SubscriptionPrice,
+          art_raw = paywall_total
+          )
+
+dat
+```
+
+```{r}
+# make a journal id later
+# things were getting messed up when I grouped dat directly, do it on a different df and just steal the id col.
+
+# grouped_dat <- dat |> 
+#   group_by(Title) |> 
+#   mutate(journal_id = cur_group_id())
+# 
+# dat <- dat |> 
+#   mutate(journal_id = grouped_dat$journal_id) |> 
+#   arrange(journal_id) |> 
+#   relocate(journal_id)
+# 
+# dat
+```
+
+Summarize it
+
+```{r summarize_it}
+dat |> 
+  summarize(n_rows = n(),
+            n_journals = n_distinct(Title),
+            meanOA = mean(OA_raw),
+            meanPrice = mean(Price),
+            meanArticles = mean(art_raw),
+            minArticles = min(art_raw),
+            maxArticles = max(art_raw),
+            meanIF = mean(IF_raw),
+            .by = c(Publisher, Domain, Pub_Disc)) |> 
+  arrange(Pub_Disc)
+
+# ggplot(data.frame(Publisher, Disc), aes(x = Publisher, y = Disc)) + 
+#   geom_point()
+```
+
+```{r}
+dat |> 
+  ggplot(aes(x = Price, y = OA_raw)) +
+  geom_point()
+
+dat |> 
+  ggplot(aes(x  = OA_raw)) +
+  geom_density()
+```
+
+
+
+
+
+
+Convert to z scores
+
+```{r}
+dat <- dat |> 
+  mutate(z_OA = standardize(OA_raw),
+         z_articles = standardize(art_raw))
+
+OA_sd <- sd(dat$OA_raw)
+OA_mean <- mean(dat$OA_raw)
+
+dat
+
+```
+
+```{r}
+# But for IF, standardize only within rows that have an IF (WoS == 1)
+
+# Compute mean and SD for WoS == 1 subset
+mean_log_if <- dat |> 
+  filter(WoS == 1) |> 
+  pull(log_IF) |> 
+  mean()
+
+sd_log_if <- dat |> 
+  filter(WoS == 1) |> 
+  pull(log_IF) |> 
+  sd()
+
+# Fill in standardized values for WoS == 1 rows, keeping z_IF = 0 where WoS is 0
+dat <- dat |> 
+  mutate(z_IF = if_else(WoS == 1, (log_IF - mean_log_if) / sd_log_if, 0  ))
+
+dat
+```
+
+```{r}
+write.csv(dat, "dat.csv", row.names = FALSE)
+```
+
+Graph it
+
+```{r}
+dat |> 
+  ggplot(aes(x = Price)) + 
+    geom_density(aes(colour = ISSN))
+  #facet_wrap(~journal_id)
+```
+
+```{r first-5-journals}
+# First 5 journals
+dat |> 
+  #slice_head(n=7*5) |> 
+  ggplot(aes(x = Year, y = Price)) + 
+    geom_point(aes(colour = z_OA)) 
+  #facet_wrap(~journal_id)
+```
+
+```{r}
+
+# Price
+# OA
+# num_articles
+# IF
+
+# Price
+dat |> 
+  ggplot(aes(x = Price,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges() 
+
+# OA
+dat |> 
+  ggplot(aes(x = OA_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# OA standardized
+dat |> 
+  ggplot(aes(x = z_OA,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+
+# num_articles
+dat |> 
+  ggplot(aes(x = art_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# num_articles standardized
+dat |> 
+  ggplot(aes(x = z_articles,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# IF
+dat |> 
+  ggplot(aes(x = IF_raw,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# log(IF)
+dat |> 
+  ggplot(aes(x = log_IF,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+# IF standardized
+dat |> 
+  ggplot(aes(x = z_IF,
+             y = as.factor(Pub_Disc),
+             fill = as.factor(Publisher)
+             )
+         ) + 
+ geom_density_ridges() +
+    theme_ridges()
+
+```
+```{r}
+dat |> 
+  #filter(Year == 2025) |> 
+  ggplot(aes(x=Price, y=Domain, fill = as.factor(Year))) +
+  geom_boxplot(size = 0.5) + 
+  geom_jitter(aes(colour = as.factor(Year)),
+              size = 0.5,
+              height = 0.35) +
+  
+  # stat_summary(fun = mean, 
+  #              geom = "point",
+  #              shape = 23,
+  #              size = 2,
+  #              fill = "white",
+  #              position = position_dodge(width = 0.75)) +
+  
+  
+  labs(title = "Prices by Discipline",
+       x = "Price ($)") +
+  guides(color = guide_legend(reverse=TRUE))
+```
+```{r}
+dat |> 
+  ggplot(aes(x = Year, y = Price, colour = as.factor(Disc), group = as.factor(ISSN_L))) +
+  geom_line() +
+  facet_wrap(~Disc, scales = "free_y") +
+  labs(title = 'Publisher-Discipline Price trends over time')
+```
+# Look into example journals
+```{r}
+growth_summary <- dat |> 
+  group_by(Title, ISSN) |> 
+  summarise(OA_growth = OA_raw[3] / OA_raw[1],
+            article_growth = art_raw[3] / art_raw[1],
+            Price_growth = Price[3] / Price[1])
+
+
+growth_summary |> 
+  arrange(desc(Price_growth) )
+
+jnl = "0003-4487"
+
+dat |> 
+  filter(ISSN_L == jnl) |> 
+  select(ISSN_L, Title, Year, Price, IF_raw, WoS, hybrid, art_raw, OA_raw) |> 
+  pivot_longer(cols = !c(ISSN_L, Title, Year),
+               names_to = 'Type',
+               values_to = 'Value') |>
+  ggplot(aes(x = Year, y = Value)) + 
+  geom_smooth(method = "lm") +
+  geom_point() +
+  facet_wrap(~Type, scales = "free_y") +
+  labs(title = glue("Journal summary stats for {jnl}") )
+
+```
+
+```{r}
+jnl = "0003-4487"  #"0169-409X"  #1146-609X, 0003-4487 poster child
+
+
+
+article_counts <- dat |> 
+  select(ISSN, Year, art_raw, hybrid) |> 
+  filter(ISSN == jnl) |> 
+  pivot_longer(cols = !c(ISSN, Year),
+               names_to = 'name',
+               values_to = 'value') |> 
+  
+  ggplot(aes(x = Year, y = value, fill = forcats::fct_rev(name)))  + 
+  geom_bar(stat = "identity") +
+  labs(title = glue("Article counts") )
+
+
+article_distribution <- dat |> 
+  select(ISSN, Year, art_raw, hybrid) |> 
+  filter(ISSN == jnl) |> 
+  pivot_longer(cols = !c(ISSN, Year),
+               names_to = 'name',
+               values_to = 'value') |> 
+  
+  ggplot(aes(x = Year, y = value, fill = forcats::fct_rev(name)))  + 
+  geom_bar(stat = "identity", position = "fill")  +
+  labs(title = glue("Article OA/paywall distributions") )
+  
+article_counts + article_distribution + 
+  plot_layout(guides = "collect") +
+  plot_annotation(title = glue("Article counts and distrubition for {jnl}"),
+                  subtitle = glue("Price goes ${filter(dat, ISSN==jnl)$Price[1]}, ${filter(dat, ISSN==jnl)$Price[2]}, ${filter(dat, ISSN==jnl)$Price[3]}, ${filter(dat, ISSN==jnl)$Price[4]}"))
+  
+```
+
+```{r}
+dat |> 
+  slice_head(n=20*4) |> 
+  ggplot(aes(x= Year, y = Price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~ISSN)
+```
+
+```{r}
+dat_w_pctchanges <- dat %>%
+  arrange(ISSN_L) |> 
+  group_by(ISSN_L) |> 
+  mutate(
+    Price_pct_change = (Price - lag(Price)) / lag(Price) * 100,
+    PaywallArticles_pct_change = (art_raw - lag(art_raw)) / lag(art_raw) * 100,
+    OA_pct_change = (OA_raw - lag(OA_raw) )
+  ) %>%
+  ungroup()
+
+write.csv(dat_w_pctchanges, 'dat_w_pctchanges.csv', row.names = FALSE)
+
+```
+
+```{r}
+dat_w_pctchanges |> 
+  na.omit() |> 
+  ggplot(aes(x = PaywallArticles_pct_change, y = Price_pct_change)) +
+  geom_point()
+
+dat_w_pctchanges |> 
+  na.omit() |> 
+  ggplot(aes(x = PaywallArticles_pct_change, y = Price_pct_change)) +
+  geom_point()
+```
+
+```{r}
+transform(dat, 
+          fct = cut(art_raw, seq(0, 5000, 500))
+          ) |> 
+  
+  ggplot(aes(x = OA_raw, y = Price)) +
+  geom_point(aes(colour = as.factor(Publisher))) +
+  
+  #facet_wrap(~Disc ) +
+  
+  facet_grid(rows = vars(Pub_Disc), cols = vars(fct)) +
+  
+  labs(title = 'Rows are Pub_Disc indexes',
+       subtitle = 'Cols are number of articles')
+
+
+```
+
+# Prior predictive distribution
+
+```{r eval=FALSE, include=FALSE}
+# For standardized variables
+e <- 20
+a <- rnorm(e, 0, 0.2 )
+bA <- rnorm(e, 0, 0.5)
+
+plot(NULL, xlim=c(-2,2), ylim=c(-2,2),
+xlab='Standardized',
+ylab='Standardized')
+
+Aseq <- seq(from=-3, to=3, len=30)
+
+for( i in 1:e ) {
+  mu <- a[i] + bA[i]*Aseq
+  lines( Aseq, mu, lwd=2, col=2)
+}
+```
+
+```{r prior-predictive}
+# Think about plausible ranges of each parameter
+
+n <- 1e3
+
+a_pub_disc  <- rnorm(n, 7.5, 1)    # Publisher intercept at mean OA (20%), mean num articles (1000), mean IF (2.5)
+
+a_journal_j <- rnorm(n, 0, 0.5)    #95% -1 to 1
+
+# sd(dat$OA_raw)    # 11
+# sd(dat$art_raw)   # 400
+# sd(dat$IF_raw)    # 1.5
+# 
+# mean(dat$OA_raw)   # 20
+# mean(dat$art_raw)  # 1000
+# mean(dat$IF_raw)   # 2.5
+# mean(dat$Price)    # 1500
+ 
+# 0, 0.2 means 95% between -40% and +40%
+b_OA   <- rnorm(n, 0, 0.2)       # OA effect, $ change per 1SD in OA
+b_art  <- rnorm(n, 0, 0.2)       # volume effect, $ change per 1SD in articles
+b_IF   <- rnorm(n, 0, 0.2)
+
+
+OA_seq <- seq(-3, 3, length.out = 60)
+art_ref <- 0     # taking average article
+IF_ref  <- 0     # Impact Factor at average
+
+
+plot(NULL, xlim = c(-3, 3),
+           ylim = c(-500, 7000),
+           xlab = "OA% Standardized (1SD = 11%)", ylab = "Price ($)", main = "Prior Predictive Distribution")
+
+for (j in 1:50) {
+  log_mu <- a_pub_disc[j] + 
+        a_journal_j[j] + 
+        b_OA[j] * OA_seq +
+        b_art[j] * art_ref +  # standardized priors, get zero'd out
+        b_IF[j] * IF_ref
+  
+  lines( OA_seq, exp(log_mu),
+         lwd = 1.5, col = 2)
+  
+}
+
+abline(h = 0, lty = 2, col = "red")
+
+```
+
+# Run Model
+
+Estimate parameters. Converted alpha model to a matrix of \[Pub, Disc\]. Requires some downstream edits to process.
+
+Add multi-level priors on the alpha intercept
+
+Add journal parameter to tell model remember that we have repeated measurements on each journal in a multi-level structure.
+
+Don't really understand correlated features no matter how many times I watch the lecture. As soon as I have to add a correlation matrix prior with LKJ or center the predictors, I lose the plot.
+
+```{=latex}
+\begin{align}
+    P_{t, j} &\sim \text{LogNormal}( \mu_{t, j}, \sigma ) \label{eq:stat_model_line1}\\
+    \mu_{t, j} &= \alpha[Publisher_j, Discipline_j] \label{eq:stat_model_line2}\\
+        & \quad + \alpha_{journal} \label{eq:stat_model_line3}\\
+        & \quad + \beta_{OA_{Publisher}} * Z_{OA_{j, t-2}} \label{eq:stat_model_line4}\\
+       & \quad + \beta_{articles} * Z_{articles_{j, t-2}} \label{eq:stat_model_line5}\\
+       & \quad + \beta_{IF} * Z_{IF{j, t-1}} \label{eq:stat_model_line6}\\
+    %\textbf{Priors:}\\
+    \alpha[Publisher, Discipline] &\sim N(\overline{\alpha}, \sigma_{pd}) \quad \text{for } [P,D] \in \{1, 2, 3, 4\} \label{eq:stat_model_line7}\\
+    \overline{\alpha} &\sim N(7.5, 1) \label{eq:stat_model_line8}\\
+    \alpha_{journal} &\sim N(0, \sigma_{journal}) \quad \text{for } j \in \{1, \dotsc, J\} \label{eq:stat_model_line9}\\
+    \beta_{OA_{Publisher}} &\sim N(0, 0.2) \quad \text{for Publisher } \in \{1, \dotsc, P\} \label{eq:stat_model_line10}\\
+    \beta_{articles} &\sim N(0, 0.2) \label{eq:stat_model_line11}\\
+    \beta_{IF} &\sim N(0, 0.2)\label{eq:stat_model_line12}\\
+    \sigma_{pd} &\sim Exponential(1) \label{eq:stat_model_line13}\\
+    \sigma_{journal} &\sim Exponential(1) \label{eq:stat_model_line14}\\
+    \sigma &\sim Exponential(1) \label{eq:stat_model_line15}
+\end{align}
+```
+
+```{r}
+dat <- dat |>
+  mutate(journal_id = as.numeric(as.factor(Title)))
+
+dat |> 
+  summarize(sd(OA_raw))
+
+write.csv(dat, 'dat.csv', row.names = FALSE)
+
+dat
+```
+
+## How many titles increase Price and OA from first to last year?
+```{r}
+# 1. Compute first-to-last deltas for each individual journal
+journal_changes <- dat %>%
+  arrange(journal_id, Year) %>%
+  group_by(journal_id) %>%
+  summarise(
+    first_year    = first(Year),
+    last_year     = last(Year),
+    n_years       = n(),
+    
+    # Raw deltas (Last observed year minus First observed year)
+    price_diff    = last(Price) - first(Price),
+    oa_diff       = last(OA_raw) - first(OA_raw),
+    
+    # Boolean flags for increases
+    price_inc     = price_diff > 0,
+    oa_inc        = oa_diff > 0,
+    both_inc      = price_inc & oa_inc,
+    .groups       = "drop"
+  )
+
+# 2. Summarize counts and proportions across all journals
+summary_counts <- journal_changes %>%
+  summarise(
+    total_journals       = n(),
+    n_price_increased    = sum(price_inc, na.rm = TRUE),
+    pct_price_increased  = mean(price_inc, na.rm = TRUE) * 100,
+    n_oa_increased       = sum(oa_inc, na.rm = TRUE),
+    pct_oa_increased     = mean(oa_inc, na.rm = TRUE) * 100,
+    n_both_increased     = sum(both_inc, na.rm = TRUE),
+    pct_both_increased   = mean(both_inc, na.rm = TRUE) * 100
+  )
+
+summary_counts
+```
+
+```{r}
+# 1. Evaluate both endpoint changes and year-over-year trajectories per journal
+journal_trajectories <- dat %>%
+  arrange(journal_id, Year) %>%
+  group_by(journal_id) %>%
+  filter(n() >= 2) %>%  # Ensure at least 2 observations to compare transitions
+  summarise(
+    n_years        = n(),
+    
+    # Endpoint comparison (Last minus First)
+    price_inc_net  = (last(Price) - first(Price)) > 0,
+    oa_inc_net     = (last(OA_raw) - first(OA_raw)) > 0,
+    
+    # Strict monotonic increase: EVERY year-over-year step is > 0
+    # diff(Price) computes [Year2 - Year1, Year3 - Year2, ...]
+    price_inc_all  = all(diff(Price) > 0),
+    oa_inc_all     = all(diff(OA_raw) > 0),
+    
+    # Optional: Non-decreasing every year (allows 0 change / flat years)
+    price_nondec   = all(diff(Price) >= 0),
+    
+    # Optional: Count how many individual annual transitions were positive
+    n_price_hikes  = sum(diff(Price) > 0),
+    n_transitions  = n() - 1,
+    .groups        = "drop"
+  )
+
+# 2. Summarize proportions across all journals
+summary_stats <- journal_trajectories %>%
+  summarise(
+    total_journals          = n(),
+    
+    # Price metrics
+    pct_price_net_increase  = mean(price_inc_net, na.rm = TRUE) * 100,
+    pct_price_every_year    = mean(price_inc_all, na.rm = TRUE) * 100,
+    pct_price_never_dropped = mean(price_nondec, na.rm = TRUE) * 100,
+    
+    # OA% metrics
+    pct_oa_net_increase     = mean(oa_inc_net, na.rm = TRUE) * 100,
+    pct_oa_every_year       = mean(oa_inc_all, na.rm = TRUE) * 100
+  )
+
+summary_stats
+```
+
+```{r ulam}
+
+dat_list <- dat |> 
+  select(journal_id, Year, Price, Pub, Disc, z_OA, z_articles, z_IF, WoS)
+
+m4.16 <- ulam(
+  alist( 
+    Price ~ dlnorm(mu, sigma),             # within cluster, journal j
+    
+    mu <- a[Pub, Disc] + 
+          a_journal_est[journal_id] +
+          b_OA[Pub] * z_OA +
+          b_articles * z_articles +
+          b_WoS * WoS +
+          b_IF * (WoS * z_IF),
+    
+    matrix[Pub, Disc]:a ~ dnorm(abar, zigma),   # between disciplines  
+    
+    abar ~ dnorm(7.5, 1),    # Global intercept at mean OA, articles, and IF, exp(7.5) = $1800
+    zigma ~ dexp(1),
+    
+    a_journal_est[journal_id] ~ dnorm(0, sigma_journal),   # between journals
+    b_OA[Pub] ~ dnorm(0, 0.2),                             # $ change per 1 SD OA
+    b_articles ~ dnorm(0, 0.2),                            # $ change per 1 SD articles
+    b_WoS ~ dnorm(0, 0.2),                                 # binary 0/1 variable
+    b_IF ~ dlnorm(0, 0.2),                                 # $ change per 1 SD in IF
+    
+    sigma_journal ~ dexp(1),
+    sigma ~ dexp(1) 
+    
+  ), data=dat_list, chains=4, cores=4, log_lik = TRUE
+)
+```
+
+## Check parameters
+
+```{r precis}
+precis(m4.16, depth = 3)
+```
+
+```{r precis-plot}
+precis_plot(precis(m4.16, depth = 3) )
+```
+
+```{r WAIC}
+
+# Compare m4.8 (fixed sigma) to 
+# m4.9 (hyper-prior alpha bar and zigma)
+# m4.10 (journal intercept)
+
+# m4.8 prior
+#matrix[Publisher, Disc]:a ~ dnorm(7.5, 0.5),     # Intercept at mean OA, articles, and IF, exp(7.5) = $1800
+
+# m4.8        mean   sd  5.5% 94.5% rhat ess_bulk
+# a[1,1]      7.60 0.01  7.58  7.62 1.00  2847.39
+# a[2,1]      6.91 0.01  6.89  6.92 1.00  1737.66
+# a[1,2]      7.82 0.01  7.80  7.84 1.01  2011.14
+# a[2,2]      7.31 0.02  7.28  7.34 1.00  2368.58
+# b_OA       -0.05 0.01 -0.06 -0.04 1.00  2210.20
+# b_articles  0.15 0.01  0.14  0.16 1.00  2664.06
+# b_IF        0.26 0.01  0.25  0.27 1.00  1972.26
+
+WAIC(m4.16)
+#compare(m4.8, m4.9, m4.10)
+
+# Huh, it doesn't matter....
+#         WAIC    SE dWAIC  dSE pWAIC weight
+# m4.9 13363.9 30.09   0.0   NA     0   0.53
+# m4.8 13364.1 30.10   0.2 0.01     0   0.47
+
+#         WAIC      lppd     penalty  std_err
+# m4.10  670.1015	-333.3762	1.674584	5.955642		
+#        4691.792	-2341.588	4.307885	24.87949	
+
+# m4.12  963.8343	-479.4374	2.479748	7.744663	
+
+```
+
+## Check Chain Diagnostics
+
+- Trace plots
+- Trank plots
+- Rhat - use variance within chain (start to end) / between chains, approach same and should go to 1
+- Effective sample size - how long would the chain be if each sample were independent? Can be negatively autocorrelated, ess *greater* than number of samples! Number of samples you took / measure of autocorrelation
+- Divergences
+
+```{r dashboard}
+dashboard(m4.16)
+```
+
+```{r eval=FALSE}
+traceplot_ulam(m4.16, window = c(200, 1000))
+```
+
+```{r eval=FALSE}
+trankplot(m4.16)
+```
+
+##Parameters are not independent.
+
+They depend on one another. See the covariance
+
+```{r eval=FALSE}
+pairs(m4.16)
+```
+
+# Posterior Predictive Distribution
+
+## Pull post
+
+```{r post}
+post <- extract.samples(m4.16)  # keeps the covariance information
+
+post_data_frame <- as.data.frame(post)
+post_data_frame |> 
+  select(1:10) |>   # only first 10 columns
+  head()
+```
+
+## Did prior move
+
+```{r prior-moved}
+dens(post$b_OA)
+
+prior_moved_df <- data.frame(
+  #value = c(rnorm(2000, 0, 0.2), post$b_OA[,1], post$b_OA[,2]),
+  value = c(rnorm(2000, 0, 0.2), post$b_OA),
+  group = rep(c("Prior","PosteriorA"), each = 2000)
+)
+
+ggplot(prior_moved_df, aes(x = value)) + 
+  geom_density(aes(colour = group)) +
+  labs(title = "b_OA Prior (blue), Posterior (red)")
+  
+```
+
+## Discipline offsets
+
+Get back to scale of actual dollar amounts
+
+```{r convert-back-to-dollars}
+# convert entire alpha matrix at once on NOT data.frame version, sometimes you want to keep the named list version 
+baseline_dollars <- as.data.frame(exp(post$a))
+
+colnames(baseline_dollars) <- c('P1D1', 'P1D2', 'P1D3', 'P1D4')    #THIS CHANGED WHEN ALPHA IS A MATRIX
+precis(as.data.frame(baseline_dollars))
+
+#dens(baseline_dollars$P1D4 - baseline_dollars$P1D1)
+```
+
+```{r post-data-frame}
+post_data_frame <- post_data_frame |> 
+  mutate(across(
+    starts_with("a."), ~ exp(.x),
+    .names = "exp_{.col}")   # to keep original values, include name for new columns
+    )
+
+post_data_frame |> 
+  select(last_col(9):last_col()) |>   # only last 10 columns
+  head()
+```
+
+```{r}
+post_data_frame <- post_data_frame |> 
+  mutate(Disc1_to_2 = exp_a.2 - exp_a.1,
+         Disc1_to_3 = exp_a.3 - exp_a.1,
+         Disc1_to_4 = exp_a.4 - exp_a.1)
+
+post_data_frame |> 
+  select(Disc1_to_2, Disc1_to_3, Disc1_to_4) |> 
+  pivot_longer(cols = c(Disc1_to_2, Disc1_to_3, Disc1_to_4),
+             names_to = 'Label',
+             values_to = 'Value') |> 
+  
+  ggplot(aes(x=Value)) +
+    geom_density(aes(colour = Label)) +
+  
+    labs(title = "Effect of Moving from Discipline 1 to Others", x = "$ Change", y = "Density")
+
+post_data_frame |> 
+  select(Disc1_to_2, Disc1_to_3, Disc1_to_4) |> 
+  summarise(mean(Disc1_to_2),
+            mean(Disc1_to_3),
+            mean(Disc1_to_4))
+
+```
+
+## Percentage Impact per 1 SD Shift, (exp(beta) - 1) \* 100
+log(DV) = Intercept + B1 * IV 
+"One unit increase in IV is associated with a (B1 * 100) percent increase in DV."
+
+Interpret the exponentiated coefficients as multiplicative effects on price.
+For example: if beta_oa = -0.2, then a 1-SD increase in OA_percent multiplies price by exp(-0.2) ≈ 0.82 → ~18% decrease.
+
+
+If you log transform an outcome and model it in a linear regression using the following formula specification: log(y) ~ x, the coefficient  β1  is a mean difference of the log outcome comparing adjacent units of  X. This is practically useless, so we exponentiate the parameter  e^β1  and interpret this value as a geometric mean difference.
+
+```{r percentage-impact}
+post_data_frame <- post_data_frame |> 
+  mutate(
+    OA_pct_change   = (exp(b_OA) - 1) * 100,
+    #OA.2_pct_change   = (exp(b_OA.2) - 1) * 100,
+    Volume_pct_change = (exp(b_articles) - 1) * 100,
+    IF_pct_change   = (exp(b_IF) - 1) * 100,
+    WoS_pct_change   = (exp(b_WoS) - 1) * 100
+)
+
+#precis(post_data_frame, pars = c('OA_pct_change', 'Volume_pct_change', 'IF_pct_change'))
+#precis_plot(precis(post_data_frame))
+
+post_data_frame |> 
+  #select(OA_pct_change) |> 
+  # pivot_longer(cols = OA_pct_change),
+  #            names_to = 'Label',
+  #            values_to = 'Pct') |> 
+  
+  ggplot(aes(x=OA_pct_change)) +
+    geom_density() +
+    scale_x_continuous(breaks = seq(-1, 7, by = 1)) +
+    labs(title = glue("Density Plot of b_OA Effect on Price with 1SD Increase, {round(sd(dat$OA_raw), 3)}%"), x = "% Price Change", y = "Density")
+
+post_data_frame |> 
+  filter(b_OA < 0)
+
+```
+
+```{r}
+post_data_frame |> 
+  select(Volume_pct_change, IF_pct_change, WoS_pct_change, OA_pct_change) |> 
+  pivot_longer(cols = c(Volume_pct_change, IF_pct_change, WoS_pct_change, OA_pct_change),
+             names_to = 'Label',
+             values_to = 'Pct') |> 
+  
+  ggplot(aes(x=Pct)) +
+    geom_density(aes(colour = Label)) +
+    labs(title = "Density Plot of betas by Publisher Effect", x = "% Change", y = "Density")
+
+post_data_frame |> 
+  select(Volume_pct_change, IF_pct_change, WoS_pct_change, OA_pct_change) |> 
+  summarise(mean(Volume_pct_change),
+            mean(IF_pct_change),
+            mean(WoS_pct_change),
+            mean(OA_pct_change))
+```
+```{r}
+post_data_frame |> 
+  select(b_articles, b_IF, b_WoS, b_OA) |> 
+  pivot_longer(cols = c(b_articles, b_IF, b_WoS, b_OA),
+             names_to = 'Label',
+             values_to = 'Pct') |> 
+  
+  ggplot(aes(x=Pct )) +
+    geom_density(aes(colour = Label) ) +
+    labs(title = "Density Plot of betas by Publisher Effect", x = "Raw Change", y = "Density") + 
+    xlim(c(-0.5, 0.5) ) +
+  
+  stat_function(fun = dnorm,
+                args = list(mean = 0,
+                            sd = 0.2),
+                color = "black",
+                linewidth = 1,
+                linetype = "dashed") 
+
+```
+
+```{r}
+# plot the data
+
+post_data_frame_10 <- post_data_frame |> slice_head(n = 10)
+
+line_data <- tibble(
+  Pub_Disc = rep( c(1, 2, 3, 4), each = 10 ),  # 1,1,1,1,2,2,2,2, etc
+  
+  b_int = c(post_data_frame_10$exp_a.1,   # 10 rows of a_1 for Pub_Disc = 1
+            post_data_frame_10$exp_a.3, 
+            post_data_frame_10$exp_a.2, 
+            post_data_frame_10$exp_a.4
+            ),
+  
+  slope = rep( (exp(post_data_frame_10$b_OA) - 1) * 100, 4)  # repeat 10 rows 4 times
+)
+
+
+dat |> 
+  ggplot(aes(x = OA_raw, 
+             y = Price, 
+             shape = factor(Pub_Disc) )
+         ) +
+   geom_point( aes( colour = factor(Publisher) ) ) +
+  
+   geom_abline(data = line_data, aes(intercept = b_int, slope = slope), color = "red") + 
+  
+   labs(title = "10 Posterior mean lines across OA_raw %",
+        subtitle = "Note: Free y-scale") +
+   facet_wrap(~Pub_Disc, scales = "free_y")
+    
+
+```
+
+
+
+
+```{r}
+post_data_frame_10 |> 
+  select(starts_with('a_journal_est.1') ) |> 
+  pivot_longer(cols = !c(),
+               names_to = 'Name',
+               values_to = 'Value') |>
+  ggplot() + 
+  geom_point(aes(x = Name, y = Value) )
+```
+
+```{r}
+summary <- dat |> 
+  group_by(Pub, Disc, Year) |> 
+  summarise(mean_OA_raw = mean(OA_raw))
+
+summary |> 
+  ggplot(aes(x = Year, y = mean_OA_raw, colour = as.factor(Disc), group = as.factor(Disc))) +
+  geom_line() +
+  #geom_smooth(method = "lm") +
+  facet_wrap(~Pub) +
+  labs(title = 'Publisher Discipline OA% trends over time')
+```
+
+
+
+```{r}
+## BROKEN
+
+
+# 2. Compute posterior mean and 89% PI for each journal's varying intercept (a_journal)
+a_journal_mean <- apply(post_data_frame_10$a_journal, 2, mean)    # just saying a_journal does all the a_journal_ests!
+a_journal_PI   <- apply(post_data_frame_10$a_journal, 2, PI, prob = 0.89)
+
+# 3. Compute each journal's raw (unpooled) empirical offset on the log scale
+# Subtract the covariate-adjusted baseline (using posterior means of fixed effects)
+a_pd_mean <- apply(post$a, 2, mean)
+
+dat$expected_fixed <- a_pd_mean + 
+                      mean(post$b_WoS) * dat$WoS + 
+                      mean(post$b_IF) * (dat$WoS * dat$z_IF) + 
+                      mean(post$b_OA) * dat$z_OA + 
+                      mean(post$b_articles) * dat$z_articles
+
+dat$raw_residual <- log(dat$Price) - dat$expected_fixed
+
+# Aggregate raw residuals and sample size (number of years) per journal
+journal_summary <- dat %>%
+  group_by(journal_id) %>%
+  summarise(
+    n_years    = n(),
+    raw_offset = mean(raw_residual)
+  ) %>%
+  arrange(journal_id)
+
+# Combine into a plotting dataframe
+shrink_df <- data.frame(
+  Journal      = journal_summary$journal_id,
+  n_years      = journal_summary$n_years,
+  raw_offset   = journal_summary$raw_offset,
+  post_mean    = a_journal_mean,
+  post_low     = a_journal_PI[1, ],
+  post_high    = a_journal_PI[2, ]
+)
+```
+
+# No Pooling
+```{r ulam nopooling}
+
+dat_list <- dat |> 
+  select(journal_id, Year, Price, Pub, Disc, z_OA, z_articles, z_IF, WoS)
+
+m4.15_nopool <- ulam(
+  alist( 
+    Price ~ dlnorm(mu, sigma),             # within cluster, journal j
+    
+    mu <- a[Pub, Disc] + 
+          a_journal_est[journal_id] +
+          b_OA[Pub] * z_OA +
+          b_articles * z_articles +
+          b_WoS * WoS +
+          b_IF * (WoS * z_IF),
+    
+    matrix[Pub, Disc]:a ~ dnorm(7.5, 1),   # between disciplines, no abar and zigma here
+    
+    a_journal_est[journal_id] ~ dnorm(0, 5),   # between journals
+    
+    b_OA[Pub] ~ dnorm(0, 0.2),                             # $ change per 1 SD OA
+    b_articles ~ dnorm(0, 0.2),                            # $ change per 1 SD articles
+    b_WoS ~ dnorm(0, 0.2),                                 # binary 0/1 variable
+    b_IF ~ dlnorm(0, 0.2),                                 # $ change per 1 SD in IF
+    
+    sigma ~ dexp(1) 
+    
+  ), data=dat_list, chains=4, cores=4, log_lik = TRUE
+)
+```
+
+```{r}
+precis(m4.15_nopool, depth = 3)
+```
+
+```{r}
+precis_plot(precis(m4.15_nopool, depth = 3) )
+```
+
+
+```{r}
+post_nopool <- extract.samples(m4.15_nopool)  # keeps the covariance information
+
+post_nopool_data_frame <- as.data.frame(post_nopool)
+post_nopool_data_frame |> 
+  select(1:10) |>   # only first 10 columns
+  head()
+```
+
+```{r}
+no_pool_means <- apply(post_nopool$a, 2, mean)
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Sort by raw empirical offset for clean visual ordering (subsetting first 60 for readability)
+df_plot <- shrink_df %>%
+  arrange(raw_offset) %>% 
+  slice(seq(1, nrow(shrink_df), length.out = nrow(shrink_df))) # Sample 60 evenly spaced journals across the spectrum
+
+idx <- 1:nrow(df_plot)
+
+plot(NULL, 
+     xlim = range(c(df_plot$raw_offset, df_plot$post_mean)) * 1.1, 
+     ylim = c(1, nrow(df_plot)),
+     xlab = "Log-Price Offset from Category Baseline", 
+     ylab = "Journals (Ordered by Raw Offset)",
+     main = "Partial Pooling Shrinkage: Raw vs. Posterior Estimates")
+
+# Vertical dashed line at 0 (the grand pooled mean for a_journal)
+abline(v = 0, lty = 2, col = "gray50", lwd = 1.5)
+
+# Draw arrows from Raw Offset (open circle) -> Posterior Mean (filled dot)
+arrows(x0 = df_plot$raw_offset, y0 = idx,
+       x1 = df_plot$post_mean,  y1 = idx,
+       length = 0.06, col = col.alpha("black", 0.5), lwd = 1.2)
+
+# Plot Raw Empirical Offsets (Unpooled)
+points(df_plot$raw_offset, idx, pch = 1, col = "firebrick", cex = 1.1, lwd = 1.5)
+
+# Plot Posterior Means (Partially Pooled)
+points(df_plot$post_mean, idx, pch = 16, col = "dodgerblue4", cex = 1.1)
+
+legend("topleft", 
+       legend = c("Raw Empirical Offset (Unpooled)", 
+                  "Posterior Mean (Partially Pooled)", 
+                  "Pooled Prior Mean (0)"),
+       pch    = c(1, 16, NA),
+       lty    = c(NA, NA, 2),
+       col    = c("firebrick", "dodgerblue4", "gray50"),
+       lwd    = c(1.5, 1.5, 1.5),
+       bty    = "n")
+```
+
+
+
+
+# Compare st devs
+```{r}
+# st devs and did the prior move?
+
+post_data_frame |> 
+  select(sigma, sigma_journal, zigma) |> 
+  pivot_longer(cols = c(sigma, sigma_journal, zigma),
+             names_to = 'Label',
+             values_to = 'Value') |> 
+  
+  
+  ggplot(aes(x=Value) ) +
+  geom_density(aes(y = after_stat(scaled),
+                   colour = Label) )+
+
+  geom_function(fun = dexp,
+                args = list(rate = 1),
+                linetype = "dotted", 
+                linewidth = 0.8
+                ) +
+    
+  labs(title = "MCMC Posterior Density sd's",
+         subtitle = "Scaled to Max Height = 1, Prior exp(1) in dotted line", 
+         x = "Posterior Standard Deviation",
+         y = "Density") +
+  
+  xlim(c(0,4))
+
+```
+
+
+
+# Make a prediction for a new observation in same Cluster
+
+```{r}
+
+# Journal ID 1, in Discipline 4, take average of z-score predictors
+
+with(post_data_frame_10, 
+       a.4 +
+       a_journal_est.66 + 
+       b_OA * -0.63019 + 
+       b_articles * 0.1727 + 
+       b_WoS * 1 + 
+       b_IF * -0.1303
+     )
+
+exp(7.67)
+```
+
+
+```{r}
+dens(post_data_frame$mu.1)
+```
+
+
+
+```{r}
+#mus <- link(m4.15, data = data.frame(OA_raw = OA_seq))
+
+# Need to untangle b_OA is based on 1SD in zOA, need to turn it back to OA_raw to plot against OA_seq, 0:100
+
+
+
+jnl_to_test = 66
+disc_to_test = 4
+
+# Choose reasonable StDevs to project
+mean(dat$OA_raw)  # 21.72
+sd(dat$OA_raw)    # 16.83
+
+d_pred <- list(
+  journal_id = rep(jnl_to_test,8),
+  Pub = rep(1,8),
+  Disc = rep(disc_to_test,8),
+  z_OA = -2:5,
+  z_articles = rep(0,8),
+  z_IF = rep(0,8),
+  WoS = rep(0,8)
+  
+)
+
+p <- link( m4.16, data = d_pred)   # 2,000 rows of 8 columns, one for each z_OA we fed it
+
+p_long <- as.data.frame(p) |>
+  rename("-2" = V1,
+         "-1" = V2,    # st dev values to sweep
+         "0" = V3,
+         "1" = V4,
+         "2" = V5,
+         "3" = V6,
+         "4" = V7,
+         "5" = V8) |> 
+  pivot_longer(cols = !c(),
+                       names_to = 'StDev',
+                       values_to = 'Values') |> 
+  mutate(StDev = as.numeric(StDev),
+         OA_percent = (StDev * sd(dat$OA_raw) ) + mean(dat$OA_raw)  )
+
+p_long |> 
+  ggplot(aes(x = OA_percent, y = Values)) +
+  geom_point()
+
+
+# compute the mean of each column ("2") of the matrix p
+mu.mean <- apply(p, 2, mean)     # contains the average mu at each stdev value
+mu.PI <- apply(p, 2, PI, prob = 0.89)  # contains 89% upper and lower bounds for each stdev value
+
+mu.mean_df <- as.data.frame(mu.mean) |> 
+  mutate(x_value = -2:5,
+         OA_percent = (x_value * sd(dat$OA_raw) ) + mean(dat$OA_raw) )
+
+mu.PI_df <- as.data.frame(mu.PI) |> 
+  mutate("bound" = c("lower", "upper")) |> 
+  rename("-2" = V1,
+         "-1" = V2,
+         "0" = V3,
+         "1" = V4,
+         "2" = V5,
+         "3" = V6,
+         "4" = V7,
+         "5" = V8) |> 
+  pivot_longer(cols = !c(bound),
+                       names_to = 'StDev',
+                       values_to = 'Values') |> 
+  pivot_wider(id_cols = c(StDev),
+              names_from = 'bound',
+              values_from = 'Values') |> 
+  mutate(StDev = as.numeric(StDev),
+         OA_percent = (StDev * sd(dat$OA_raw) ) + mean(dat$OA_raw))
+```
+
+```{r}
+      # p_long is the data
+# plot <- p_long |>   
+#   ggplot(aes(x = OA_percent, y = exp(Values) )) + 
+#   geom_point()
+
+plot <- dat |> 
+  filter(journal_id == 66) |> 
+  ggplot(aes(x = OA_raw, y = Price)) +
+  geom_point()
+
+plot
+
+
+plot + geom_line(data = mu.mean_df,
+                 aes(x = OA_percent, y = exp(mu.mean) ) , color = "darkred", linewidth = 1) +
+       geom_ribbon(data = mu.PI_df,
+                 aes(x = OA_percent, ymin = exp(lower), ymax = exp(upper) ),
+                 inherit.aes = FALSE,
+                 alpha = 0.1,
+                 fill = "darkred") +
+
+  geom_line(data = mu.PI_df,
+            aes(x = OA_percent, y = exp(lower)), color = 'gray', linewidth = 1) +
+  geom_line(data = mu.PI_df,
+            aes(x = OA_percent, y = exp(upper)), color = 'gray', linewidth = 1) +
+
+
+  labs(title = glue("89% Conf Intervals of Mean Price for Journal {jnl_to_test} Sweeping Over OA%"),
+       subtitle = glue("Mean OA% is {round(OA_mean, 2)}, 1SD in OA% is {round(OA_sd, 2)}"),
+       y = "Price ($)")
+  
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# For second Publisher
+
+```{r}
+# Publisher effect
+# a[3] + a[4] / 2  -  a[1] + a[2] / 2
+#   P2,D1 & P2,D2     P1,D1 & P1,D2
+#    Publisher 2         Publisher 1
+
+diff_publisher <- (baseline_dollars$P2D1 + baseline_dollars$P2D2) / 2 - (baseline_dollars$P1D1 + baseline_dollars$P1D2) / 2
+
+#diff_publisher <- (post_data_frame$exp_a_pub.3 + post_data_frame$exp_a_pub.4)/2 - (post_data_frame$exp_a_pub.1 + post_data_frame$exp_a_pub.2)/2
+
+
+# Discipline effect
+# a[2] + a[4] / 2  -  a[1] + a[3] / 2
+#  P1,D2 & P2,D2  -    P1,D1 & P2,D1
+#    Disc 2               Disc 1
+
+diff_discipline <- (baseline_dollars$P1D1 - baseline_dollars$P1D2)
+dens(diff_discipline)
+#diff_discipline <- (post_data_frame$exp_a_pub.2 + post_data_frame$exp_a_pub.4)/2 - (post_data_frame$exp_a_pub.1 + post_data_frame$exp_a_pub.3)/2
+
+# Inspect mean effects and compatibility intervals
+precis(data.frame(diff_publisher, diff_discipline))
+
+precis_plot(precis(data.frame(diff_publisher, diff_discipline)))
+```
+
+```{r}
+
+# 'P1D1', 'P2D1', 'P1D2', 'P2D2'
+dens(post_data_frame$exp_a.3 - post_data_frame$exp_a.1)  # discipline effect
+dens(post_data_frame$exp_a.4 - post_data_frame$exp_a.2)  # discipline effect
+
+
+dens(post_data_frame$exp_a.2 - post_data_frame$exp_a.1)  # publisher effect
+dens(post_data_frame$exp_a.4 - post_data_frame$exp_a.3)  # publisher effect
+
+
+```
+
+```{r}
+
+differences <- tibble(
+  changingDisc_samePub1 = post_data_frame$exp_a.3 - post_data_frame$exp_a.1,
+  changingDisc_samePub2 = post_data_frame$exp_a.4 - post_data_frame$exp_a.2,
+  
+  changingPub_sameDisc1 = post_data_frame$exp_a.2 - post_data_frame$exp_a.1,
+  changingPub_sameDisc2 = post_data_frame$exp_a.4 - post_data_frame$exp_a.3
+)
+
+# From Pub 1->2 -1000; Disc 1->2 +500
+
+differences |> 
+  pivot_longer(cols = c(changingDisc_samePub1, 
+                        changingDisc_samePub2, 
+                        changingPub_sameDisc1, 
+                        changingPub_sameDisc2
+                        ),
+             names_to = 'Label',
+             values_to = 'Pct') |> 
+  
+  ggplot(aes(x=Pct)) +
+    geom_density(aes(colour = Label)) +
+    labs(title = "Density Plot of Publisher and Discipline Effects", x = "Change in alpha", y = "Density")
+
+
+```
